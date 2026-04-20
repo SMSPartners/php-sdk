@@ -10,7 +10,7 @@ Official PHP SDK for the [SMS Partners](https://sms-partners.com) API.
 ## Installation
 
 ```bash
-composer require sms-partners/sms-partners-php
+composer require sms-partners/php-sdk
 ```
 
 ## Getting Started
