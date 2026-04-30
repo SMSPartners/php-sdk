@@ -1,6 +1,6 @@
 # SMS Partners PHP SDK
 
-Official PHP SDK for the [SMS Partners](https://sms-partners.com) API.
+Official PHP SDK for the [SMS Partners](https://smspartners.app) API.
 
 ## Requirements
 
@@ -271,7 +271,7 @@ If you are using a self-hosted or staging instance, pass a custom base URL as th
 ```php
 $client = new Client(
     apiKey: 'your-api-key',
-    baseUrl: 'https://staging.sms-partners.com',
+    baseUrl: 'https://staging.smspartners.app',
 );
 ```
 

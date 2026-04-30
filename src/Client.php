@@ -20,7 +20,7 @@ class Client
 
     public function __construct(
         private readonly string $apiKey,
-        private readonly string $baseUrl = 'https://sms-partners.com',
+        private readonly string $baseUrl = 'https://smspartners.app',
     ) {
         $this->http = new GuzzleClient([
             'base_uri' => rtrim($this->baseUrl, '/') . '/',
