@@ -2,10 +2,14 @@
 
 namespace SmsPartners;
 
+use DateTimeInterface;
 use GuzzleHttp\Client as GuzzleClient;
 use GuzzleHttp\Exception\ClientException;
 use GuzzleHttp\Exception\ConnectException;
 use SmsPartners\Data\AccountResponse;
+use SmsPartners\Data\Message;
+use SmsPartners\Data\MessagePage;
+use SmsPartners\Data\SenderId;
 use SmsPartners\Data\SendResponse;
 use SmsPartners\Data\WebhookEvent;
 use SmsPartners\Exceptions\ApiException;
@@ -35,11 +39,11 @@ class Client
     }
 
     /**
-     * Send an SMS message.
+     * Send an SMS message, optionally scheduled for a future time.
      *
      * @throws SmsPartnersException
      */
-    public function send(string $to, string $message, ?string $from = null): SendResponse
+    public function send(string $to, string $message, ?string $from = null, ?DateTimeInterface $scheduledAt = null): SendResponse
     {
         $payload = ['to' => $to, 'message' => $message];
 
@@ -47,7 +51,69 @@ class Client
             $payload['from'] = $from;
         }
 
-        return new SendResponse($this->request('POST', 'api/v1/sms', $payload));
+        if ($scheduledAt !== null) {
+            $payload['scheduled_at'] = $scheduledAt->format(DateTimeInterface::ATOM);
+        }
+
+        $response = $this->request('POST', 'api/v1/sms', $payload);
+
+        return new SendResponse($response['data']);
+    }
+
+    /**
+     * Get the current credit balance.
+     *
+     * @throws SmsPartnersException
+     */
+    public function balance(): int
+    {
+        $response = $this->request('GET', 'api/v1/balance');
+
+        return (int) $response['balance'];
+    }
+
+    /**
+     * List outbound messages, newest first.
+     *
+     * @throws SmsPartnersException
+     */
+    public function listMessages(?string $status = null, int $page = 1): MessagePage
+    {
+        $query = ['page' => $page];
+
+        if ($status !== null) {
+            $query['status'] = $status;
+        }
+
+        $response = $this->request('GET', 'api/v1/messages', query: $query);
+
+        return new MessagePage($response);
+    }
+
+    /**
+     * Get a single message by ID.
+     *
+     * @throws SmsPartnersException
+     */
+    public function getMessage(int $id): Message
+    {
+        $response = $this->request('GET', "api/v1/messages/{$id}");
+
+        return new Message($response['data']);
+    }
+
+    /**
+     * List approved sender IDs.
+     *
+     * @return SenderId[]
+     *
+     * @throws SmsPartnersException
+     */
+    public function listSenderIds(): array
+    {
+        $response = $this->request('GET', 'api/v1/sender-ids');
+
+        return array_map(fn ($s) => new SenderId($s), (array) ($response['data'] ?? []));
     }
 
     /**
@@ -88,14 +154,25 @@ class Client
 
     /**
      * @param array<string, mixed> $body
+     * @param array<string, mixed> $query
+     *
      * @return array<string, mixed>
      *
      * @throws SmsPartnersException
      */
-    private function request(string $method, string $uri, array $body = []): array
+    private function request(string $method, string $uri, array $body = [], array $query = []): array
     {
         try {
-            $options = $method !== 'GET' ? ['json' => $body] : [];
+            $options = [];
+
+            if ($method !== 'GET' && ! empty($body)) {
+                $options['json'] = $body;
+            }
+
+            if (! empty($query)) {
+                $options['query'] = $query;
+            }
+
             $response = $this->http->request($method, $uri, $options);
 
             return (array) (json_decode($response->getBody()->getContents(), true) ?? []);
