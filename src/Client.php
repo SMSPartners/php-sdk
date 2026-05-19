@@ -15,11 +15,14 @@ use SmsPartners\Data\WebhookEvent;
 use SmsPartners\Exceptions\ApiException;
 use SmsPartners\Exceptions\AuthenticationException;
 use SmsPartners\Exceptions\InsufficientCreditsException;
+use SmsPartners\Exceptions\MalformedResponseException;
 use SmsPartners\Exceptions\SmsPartnersException;
 use SmsPartners\Exceptions\ValidationException;
 
 class Client
 {
+    public const VERSION = '0.2.0';
+
     private GuzzleClient $http;
 
     public function __construct(
@@ -32,6 +35,7 @@ class Client
                 'Authorization' => "Bearer {$this->apiKey}",
                 'Accept' => 'application/json',
                 'Content-Type' => 'application/json',
+                'User-Agent' => 'sms-partners-php/' . self::VERSION . ' php/' . PHP_VERSION,
             ],
             'timeout' => 15,
             'connect_timeout' => 5,
@@ -57,7 +61,7 @@ class Client
 
         $response = $this->request('POST', 'api/v1/sms', $payload);
 
-        return new SendResponse($response['data']);
+        return new SendResponse($this->unwrapData($response));
     }
 
     /**
@@ -68,6 +72,10 @@ class Client
     public function balance(): int
     {
         $response = $this->request('GET', 'api/v1/balance');
+
+        if (! isset($response['balance'])) {
+            throw new MalformedResponseException('balance', $response);
+        }
 
         return (int) $response['balance'];
     }
@@ -99,7 +107,7 @@ class Client
     {
         $response = $this->request('GET', "api/v1/messages/{$id}");
 
-        return new Message($response['data']);
+        return new Message($this->unwrapData($response));
     }
 
     /**
@@ -153,8 +161,24 @@ class Client
     }
 
     /**
-     * @param array<string, mixed> $body
-     * @param array<string, mixed> $query
+     * @param  array<string, mixed>  $response
+     *
+     * @return array<string, mixed>
+     *
+     * @throws MalformedResponseException
+     */
+    private function unwrapData(array $response): array
+    {
+        if (! isset($response['data']) || ! is_array($response['data'])) {
+            throw new MalformedResponseException('data', $response);
+        }
+
+        return $response['data'];
+    }
+
+    /**
+     * @param  array<string, mixed>  $body
+     * @param  array<string, mixed>  $query
      *
      * @return array<string, mixed>
      *
@@ -163,7 +187,14 @@ class Client
     private function request(string $method, string $uri, array $body = [], array $query = []): array
     {
         try {
-            $options = [];
+            $options = [
+                'headers' => [
+                    'Authorization' => "Bearer {$this->apiKey}",
+                    'Accept' => 'application/json',
+                    'Content-Type' => 'application/json',
+                    'User-Agent' => 'sms-partners-php/' . self::VERSION . ' php/' . PHP_VERSION,
+                ],
+            ];
 
             if ($method !== 'GET' && ! empty($body)) {
                 $options['json'] = $body;

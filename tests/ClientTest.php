@@ -10,16 +10,42 @@ use SmsPartners\Data\SendResponse;
 use SmsPartners\Data\WebhookEvent;
 use SmsPartners\Exceptions\AuthenticationException;
 use SmsPartners\Exceptions\InsufficientCreditsException;
+use SmsPartners\Exceptions\MalformedResponseException;
 use SmsPartners\Exceptions\ValidationException;
 
-function makeClient(MockHandler $mock): Client
+function sendResponseBody(array $overrides = []): string
+{
+    return json_encode([
+        'data' => array_merge([
+            'id' => 42,
+            'status' => 'sending',
+            'body' => 'Hello world',
+            'from' => null,
+            'scheduled_at' => null,
+            'credits_used' => 1,
+            'created_at' => '2026-05-19T10:00:00+00:00',
+            'recipients' => [[
+                'phone' => '+61412345678',
+                'status' => 'queued',
+                'delivered_at' => null,
+                'error_message' => null,
+            ]],
+        ], $overrides),
+    ]);
+}
+
+function makeClient(MockHandler $mock, ?array &$history = null): Client
 {
     $handler = HandlerStack::create($mock);
+
+    if ($history !== null) {
+        $handler->push(\GuzzleHttp\Middleware::history($history));
+    }
+
     $guzzle = new GuzzleClient(['handler' => $handler]);
 
     $client = new Client(apiKey: 'test-key');
 
-    // Inject the mock HTTP client via reflection
     $reflection = new ReflectionProperty(Client::class, 'http');
     $reflection->setAccessible(true);
     $reflection->setValue($client, $guzzle);
@@ -28,14 +54,7 @@ function makeClient(MockHandler $mock): Client
 }
 
 it('sends an SMS and returns a SendResponse', function () {
-    $mock = new MockHandler([
-        new Response(201, [], json_encode([
-            'id' => 42,
-            'status' => 'sending',
-            'to' => '+61412345678',
-            'credits_used' => 1,
-        ])),
-    ]);
+    $mock = new MockHandler([new Response(201, [], sendResponseBody())]);
 
     $response = makeClient($mock)->send('+61412345678', 'Hello world');
 
@@ -46,31 +65,73 @@ it('sends an SMS and returns a SendResponse', function () {
         ->and($response->creditsUsed)->toBe(1);
 });
 
+it('derives the convenience `to` from recipients[0].phone', function () {
+    $mock = new MockHandler([new Response(201, [], sendResponseBody([
+        'recipients' => [[
+            'phone' => '+61499999999',
+            'status' => 'queued',
+            'delivered_at' => null,
+            'error_message' => null,
+        ]],
+    ]))]);
+
+    expect(makeClient($mock)->send('+61499999999', 'Hi')->to)->toBe('+61499999999');
+});
+
 it('includes the from field when provided', function () {
+    $mock = new MockHandler([new Response(201, [], sendResponseBody())]);
+    $history = [];
+
+    makeClient($mock, $history)->send('+61412345678', 'Hello', 'MYCOMPANY');
+
+    $body = json_decode($history[0]['request']->getBody()->getContents(), true);
+    expect($body['from'])->toBe('MYCOMPANY');
+});
+
+it('sends a User-Agent identifying the SDK version', function () {
+    $mock = new MockHandler([new Response(201, [], sendResponseBody())]);
+    $history = [];
+
+    makeClient($mock, $history)->send('+61412345678', 'Hello');
+
+    $ua = $history[0]['request']->getHeaderLine('User-Agent');
+    expect($ua)->toStartWith('sms-partners-php/' . Client::VERSION);
+});
+
+it('throws MalformedResponseException when send response is missing the data envelope', function () {
     $mock = new MockHandler([
-        new Response(201, [], json_encode([
-            'id' => 1,
-            'status' => 'sending',
-            'to' => '+61412345678',
-            'credits_used' => 1,
-        ])),
+        new Response(201, [], json_encode(['id' => 42, 'status' => 'sending'])),
     ]);
 
-    $container = [];
-    $history = \GuzzleHttp\Middleware::history($container);
-    $handler = HandlerStack::create($mock);
-    $handler->push($history);
+    makeClient($mock)->send('+61412345678', 'Hello');
+})->throws(MalformedResponseException::class, "missing required field 'data'");
 
-    $guzzle = new GuzzleClient(['handler' => $handler]);
-    $client = new Client(apiKey: 'test-key');
-    $reflection = new ReflectionProperty(Client::class, 'http');
-    $reflection->setAccessible(true);
-    $reflection->setValue($client, $guzzle);
+it('throws MalformedResponseException when send response is missing the id', function () {
+    $mock = new MockHandler([
+        new Response(201, [], json_encode(['data' => [
+            'status' => 'sending',
+            'created_at' => '2026-05-19T10:00:00+00:00',
+        ]])),
+    ]);
 
-    $client->send('+61412345678', 'Hello', 'MYCOMPANY');
+    makeClient($mock)->send('+61412345678', 'Hello');
+})->throws(MalformedResponseException::class, "missing required field 'id'");
 
-    $body = json_decode($container[0]['request']->getBody()->getContents(), true);
-    expect($body['from'])->toBe('MYCOMPANY');
+it('exposes the missing key on MalformedResponseException', function () {
+    $mock = new MockHandler([
+        new Response(201, [], json_encode(['data' => [
+            'id' => 1,
+            'status' => 'sending',
+            // no created_at
+        ]])),
+    ]);
+
+    try {
+        makeClient($mock)->send('+61412345678', 'Hello');
+    } catch (MalformedResponseException $e) {
+        expect($e->missingKey)->toBe('created_at')
+            ->and($e->payload)->toHaveKey('id');
+    }
 });
 
 it('fetches account details', function () {
@@ -94,6 +155,31 @@ it('fetches account details', function () {
         ->and($account->balanceCredits)->toBe(150)
         ->and($account->isActive())->toBeTrue();
 });
+
+it('tolerates optional fields missing from the account payload', function () {
+    $mock = new MockHandler([
+        new Response(200, [], json_encode([
+            'id' => 1,
+            'name' => 'Minimal',
+            'email' => 'min@example.com',
+            // status, balance_credits, auto_topup_* all missing
+        ])),
+    ]);
+
+    $account = makeClient($mock)->account();
+
+    expect($account->balanceCredits)->toBe(0)
+        ->and($account->status)->toBe('active')
+        ->and($account->autoTopupEnabled)->toBeFalse();
+});
+
+it('throws MalformedResponseException when account payload is missing the id', function () {
+    $mock = new MockHandler([
+        new Response(200, [], json_encode(['name' => 'No id'])),
+    ]);
+
+    makeClient($mock)->account();
+})->throws(MalformedResponseException::class, "missing required field 'id'");
 
 it('throws AuthenticationException on 401', function () {
     $mock = new MockHandler([
@@ -182,3 +268,11 @@ it('parses a webhook event payload', function () {
         ->and($event->messageId())->toBe(99)
         ->and($event->recipientPhone())->toBe('+61412345678');
 });
+
+it('throws MalformedResponseException when webhook payload is missing the event', function () {
+    Client::parseWebhook(json_encode(['timestamp' => '2026-04-21T10:00:00Z']));
+})->throws(MalformedResponseException::class, "missing required field 'event'");
+
+it('throws MalformedResponseException when webhook payload is missing the timestamp', function () {
+    Client::parseWebhook(json_encode(['event' => 'message.delivered']));
+})->throws(MalformedResponseException::class, "missing required field 'timestamp'");

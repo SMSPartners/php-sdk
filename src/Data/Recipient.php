@@ -3,6 +3,7 @@
 namespace SmsPartners\Data;
 
 use DateTimeImmutable;
+use SmsPartners\Exceptions\MalformedResponseException;
 
 class Recipient
 {
@@ -15,14 +16,16 @@ class Recipient
     public readonly ?string $errorMessage;
 
     /**
-     * @param array<string, mixed> $data
+     * @param  array<string, mixed>  $data
+     *
+     * @throws MalformedResponseException
      */
     public function __construct(array $data)
     {
-        $this->phone = (string) $data['phone'];
-        $this->status = (string) $data['status'];
-        $this->deliveredAt = isset($data['delivered_at']) ? new DateTimeImmutable($data['delivered_at']) : null;
-        $this->errorMessage = isset($data['error_message']) ? (string) $data['error_message'] : null;
+        $this->phone = Payload::requireString($data, 'phone');
+        $this->status = Payload::optionalString($data, 'status') ?? 'queued';
+        $this->deliveredAt = Payload::optionalDateTime($data, 'delivered_at');
+        $this->errorMessage = Payload::optionalString($data, 'error_message');
     }
 
     public function isDelivered(): bool
