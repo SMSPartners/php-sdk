@@ -21,7 +21,7 @@ use SmsPartners\Exceptions\ValidationException;
 
 class Client
 {
-    public const VERSION = '0.2.0';
+    public const VERSION = '1.0.3';
 
     private GuzzleClient $http;
 
