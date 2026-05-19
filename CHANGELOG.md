@@ -3,7 +3,7 @@
 All notable changes to the SMS Partners PHP SDK are documented here. This
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.2.0] — 2026-05-19
+## [1.0.3] — 2026-05-19
 
 ### Fixed
 
@@ -62,4 +62,4 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   unaffected; apps catching `TypeError` specifically should switch.
 - Requires PHP 8.1+ (unchanged).
 
-[0.2.0]: https://github.com/SMSPartners/php-sdk/releases/tag/v0.2.0
+[1.0.3]: https://github.com/SMSPartners/php-sdk/releases/tag/v1.0.3
