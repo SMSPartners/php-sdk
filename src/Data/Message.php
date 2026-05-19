@@ -3,6 +3,7 @@
 namespace SmsPartners\Data;
 
 use DateTimeImmutable;
+use SmsPartners\Exceptions\MalformedResponseException;
 
 class Message
 {
@@ -24,18 +25,23 @@ class Message
     public readonly array $recipients;
 
     /**
-     * @param array<string, mixed> $data
+     * @param  array<string, mixed>  $data
+     *
+     * @throws MalformedResponseException
      */
     public function __construct(array $data)
     {
-        $this->id = (int) $data['id'];
-        $this->status = (string) $data['status'];
-        $this->body = (string) $data['body'];
-        $this->from = isset($data['from']) ? (string) $data['from'] : null;
-        $this->scheduledAt = isset($data['scheduled_at']) ? new DateTimeImmutable($data['scheduled_at']) : null;
-        $this->creditsUsed = (int) $data['credits_used'];
-        $this->createdAt = new DateTimeImmutable($data['created_at']);
-        $this->recipients = array_map(fn ($r) => new Recipient($r), (array) ($data['recipients'] ?? []));
+        $this->id = Payload::requireInt($data, 'id');
+        $this->status = Payload::requireString($data, 'status');
+        $this->body = Payload::optionalString($data, 'body') ?? '';
+        $this->from = Payload::optionalString($data, 'from');
+        $this->scheduledAt = Payload::optionalDateTime($data, 'scheduled_at');
+        $this->creditsUsed = Payload::optionalInt($data, 'credits_used');
+        $this->createdAt = Payload::requireDateTime($data, 'created_at');
+        $this->recipients = array_map(
+            fn ($r) => new Recipient((array) $r),
+            Payload::optionalArray($data, 'recipients'),
+        );
     }
 
     public function isScheduled(): bool

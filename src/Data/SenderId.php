@@ -2,6 +2,8 @@
 
 namespace SmsPartners\Data;
 
+use SmsPartners\Exceptions\MalformedResponseException;
+
 class SenderId
 {
     public readonly int $id;
@@ -11,12 +13,14 @@ class SenderId
     public readonly string $status;
 
     /**
-     * @param array<string, mixed> $data
+     * @param  array<string, mixed>  $data
+     *
+     * @throws MalformedResponseException
      */
     public function __construct(array $data)
     {
-        $this->id = (int) $data['id'];
-        $this->name = (string) $data['name'];
-        $this->status = (string) $data['status'];
+        $this->id = Payload::requireInt($data, 'id');
+        $this->name = Payload::requireString($data, 'name');
+        $this->status = Payload::optionalString($data, 'status') ?? 'pending';
     }
 }

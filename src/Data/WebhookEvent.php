@@ -3,6 +3,7 @@
 namespace SmsPartners\Data;
 
 use DateTimeImmutable;
+use SmsPartners\Exceptions\MalformedResponseException;
 
 class WebhookEvent
 {
@@ -14,13 +15,15 @@ class WebhookEvent
     public readonly array $data;
 
     /**
-     * @param array<string, mixed> $payload
+     * @param  array<string, mixed>  $payload
+     *
+     * @throws MalformedResponseException
      */
     public function __construct(array $payload)
     {
-        $this->event = (string) $payload['event'];
-        $this->timestamp = new DateTimeImmutable($payload['timestamp']);
-        $this->data = (array) ($payload['data'] ?? []);
+        $this->event = Payload::requireString($payload, 'event');
+        $this->timestamp = Payload::requireDateTime($payload, 'timestamp');
+        $this->data = Payload::optionalArray($payload, 'data');
     }
 
     public function isDelivered(): bool
