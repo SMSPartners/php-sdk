@@ -4,8 +4,9 @@ namespace SmsPartners;
 
 use DateTimeInterface;
 use GuzzleHttp\Client as GuzzleClient;
-use GuzzleHttp\Exception\ClientException;
-use GuzzleHttp\Exception\ConnectException;
+use GuzzleHttp\ClientInterface;
+use GuzzleHttp\Exception\BadResponseException;
+use GuzzleHttp\Exception\GuzzleException;
 use SmsPartners\Data\AccountResponse;
 use SmsPartners\Data\Message;
 use SmsPartners\Data\MessagePage;
@@ -21,22 +22,23 @@ use SmsPartners\Exceptions\ValidationException;
 
 class Client
 {
-    public const VERSION = '1.0.3';
+    public const VERSION = '2.0.0';
 
-    private GuzzleClient $http;
+    private ClientInterface $http;
 
+    /**
+     * @param  ClientInterface|null  $httpClient  Optional pre-configured Guzzle client. Useful for tests
+     *                                            (MockHandler) or for supplying proxy/TLS options. Headers
+     *                                            and absolute URLs are set per request, so no `base_uri`
+     *                                            or default headers are required on the supplied client.
+     */
     public function __construct(
+        #[\SensitiveParameter]
         private readonly string $apiKey,
         private readonly string $baseUrl = 'https://smspartners.app',
+        ?ClientInterface $httpClient = null,
     ) {
-        $this->http = new GuzzleClient([
-            'base_uri' => rtrim($this->baseUrl, '/') . '/',
-            'headers' => [
-                'Authorization' => "Bearer {$this->apiKey}",
-                'Accept' => 'application/json',
-                'Content-Type' => 'application/json',
-                'User-Agent' => 'sms-partners-php/' . self::VERSION . ' php/' . PHP_VERSION,
-            ],
+        $this->http = $httpClient ?? new GuzzleClient([
             'timeout' => 15,
             'connect_timeout' => 5,
         ]);
@@ -139,7 +141,7 @@ class Client
      */
     public static function verifyWebhook(string $payload, string $signature, string $secret): bool
     {
-        $expected = 'sha256=' . hash_hmac('sha256', $payload, $secret);
+        $expected = 'sha256='.hash_hmac('sha256', $payload, $secret);
 
         return hash_equals($expected, $signature);
     }
@@ -162,7 +164,6 @@ class Client
 
     /**
      * @param  array<string, mixed>  $response
-     *
      * @return array<string, mixed>
      *
      * @throws MalformedResponseException
@@ -179,62 +180,74 @@ class Client
     /**
      * @param  array<string, mixed>  $body
      * @param  array<string, mixed>  $query
-     *
      * @return array<string, mixed>
      *
      * @throws SmsPartnersException
      */
     private function request(string $method, string $uri, array $body = [], array $query = []): array
     {
-        try {
-            $options = [
-                'headers' => [
-                    'Authorization' => "Bearer {$this->apiKey}",
-                    'Accept' => 'application/json',
-                    'Content-Type' => 'application/json',
-                    'User-Agent' => 'sms-partners-php/' . self::VERSION . ' php/' . PHP_VERSION,
-                ],
-            ];
+        $options = [
+            'headers' => [
+                'Authorization' => "Bearer {$this->apiKey}",
+                'Accept' => 'application/json',
+                'Content-Type' => 'application/json',
+                'User-Agent' => 'sms-partners-php/'.self::VERSION.' php/'.PHP_VERSION,
+            ],
+        ];
 
-            if ($method !== 'GET' && ! empty($body)) {
-                $options['json'] = $body;
-            }
-
-            if (! empty($query)) {
-                $options['query'] = $query;
-            }
-
-            $response = $this->http->request($method, $uri, $options);
-
-            return (array) (json_decode($response->getBody()->getContents(), true) ?? []);
-        } catch (ClientException $e) {
-            $this->handleClientException($e);
-        } catch (ConnectException $e) {
-            throw new SmsPartnersException('Could not connect to the SMS Partners API: ' . $e->getMessage(), previous: $e);
+        if ($method !== 'GET' && ! empty($body)) {
+            $options['json'] = $body;
         }
+
+        if (! empty($query)) {
+            $options['query'] = $query;
+        }
+
+        try {
+            $response = $this->http->request($method, $this->url($uri), $options);
+        } catch (BadResponseException $e) {
+            $this->handleErrorResponse($e);
+        } catch (GuzzleException $e) {
+            // Connection refused, DNS failure, connect/read timeout, TLS error,
+            // too many redirects, etc. Guzzle 8 split these into several
+            // exception classes, so catch the common interface rather than
+            // ConnectException alone.
+            throw new SmsPartnersException('Could not reach the SMS Partners API: '.$e->getMessage(), previous: $e);
+        }
+
+        return (array) (json_decode($response->getBody()->getContents(), true) ?? []);
+    }
+
+    private function url(string $uri): string
+    {
+        return rtrim($this->baseUrl, '/').'/'.ltrim($uri, '/');
     }
 
     /**
+     * Map any 4xx/5xx response to a typed SDK exception.
+     *
      * @throws SmsPartnersException
      */
-    private function handleClientException(ClientException $e): never
+    private function handleErrorResponse(BadResponseException $e): never
     {
         $status = $e->getResponse()->getStatusCode();
         $body = (array) (json_decode((string) $e->getResponse()->getBody(), true) ?? []);
         $message = (string) ($body['message'] ?? $e->getMessage());
 
         throw match ($status) {
-            401 => new AuthenticationException($message),
+            401 => new AuthenticationException($message, previous: $e),
             402 => new InsufficientCreditsException(
                 message: $message,
                 balance: (int) ($body['balance'] ?? 0),
                 required: (int) ($body['required'] ?? 0),
+                previous: $e,
             ),
             422 => new ValidationException(
                 message: $message,
                 errors: (array) ($body['errors'] ?? []),
+                previous: $e,
             ),
-            default => new ApiException($message, $status),
+            default => new ApiException($message, $status, previous: $e),
         };
     }
 }

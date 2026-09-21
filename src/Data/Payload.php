@@ -92,7 +92,6 @@ final class Payload
 
     /**
      * @param  array<int|string, mixed>  $data
-     *
      * @return array<int|string, mixed>
      */
     public static function optionalArray(array $data, string $key): array
