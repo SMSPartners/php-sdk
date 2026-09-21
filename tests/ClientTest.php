@@ -1,16 +1,24 @@
 <?php
 
 use GuzzleHttp\Client as GuzzleClient;
+use GuzzleHttp\Exception\ClientException;
+use GuzzleHttp\Exception\ConnectException;
+use GuzzleHttp\Exception\RequestException;
+use GuzzleHttp\Exception\ServerException;
 use GuzzleHttp\Handler\MockHandler;
 use GuzzleHttp\HandlerStack;
+use GuzzleHttp\Middleware;
+use GuzzleHttp\Psr7\Request;
 use GuzzleHttp\Psr7\Response;
 use SmsPartners\Client;
 use SmsPartners\Data\AccountResponse;
 use SmsPartners\Data\SendResponse;
 use SmsPartners\Data\WebhookEvent;
+use SmsPartners\Exceptions\ApiException;
 use SmsPartners\Exceptions\AuthenticationException;
 use SmsPartners\Exceptions\InsufficientCreditsException;
 use SmsPartners\Exceptions\MalformedResponseException;
+use SmsPartners\Exceptions\SmsPartnersException;
 use SmsPartners\Exceptions\ValidationException;
 
 function sendResponseBody(array $overrides = []): string
@@ -39,18 +47,10 @@ function makeClient(MockHandler $mock, ?array &$history = null): Client
     $handler = HandlerStack::create($mock);
 
     if ($history !== null) {
-        $handler->push(\GuzzleHttp\Middleware::history($history));
+        $handler->push(Middleware::history($history));
     }
 
-    $guzzle = new GuzzleClient(['handler' => $handler]);
-
-    $client = new Client(apiKey: 'test-key');
-
-    $reflection = new ReflectionProperty(Client::class, 'http');
-    $reflection->setAccessible(true);
-    $reflection->setValue($client, $guzzle);
-
-    return $client;
+    return new Client(apiKey: 'test-key', httpClient: new GuzzleClient(['handler' => $handler]));
 }
 
 it('sends an SMS and returns a SendResponse', function () {
@@ -95,7 +95,33 @@ it('sends a User-Agent identifying the SDK version', function () {
     makeClient($mock, $history)->send('+61412345678', 'Hello');
 
     $ua = $history[0]['request']->getHeaderLine('User-Agent');
-    expect($ua)->toStartWith('sms-partners-php/' . Client::VERSION);
+    expect($ua)->toStartWith('sms-partners-php/'.Client::VERSION);
+});
+
+it('sends requests to an absolute URL under the default base URL', function () {
+    $mock = new MockHandler([new Response(201, [], sendResponseBody())]);
+    $history = [];
+
+    makeClient($mock, $history)->send('+61412345678', 'Hello');
+
+    expect((string) $history[0]['request']->getUri())->toBe('https://smspartners.app/api/v1/sms')
+        ->and($history[0]['request']->getHeaderLine('Authorization'))->toBe('Bearer test-key');
+});
+
+it('honours a custom base URL with a trailing slash', function () {
+    $mock = new MockHandler([new Response(200, [], json_encode(['balance' => 7]))]);
+    $history = [];
+    $handler = HandlerStack::create($mock);
+    $handler->push(Middleware::history($history));
+
+    $client = new Client(
+        apiKey: 'test-key',
+        baseUrl: 'https://staging.example.test/',
+        httpClient: new GuzzleClient(['handler' => $handler]),
+    );
+
+    expect($client->balance())->toBe(7)
+        ->and((string) $history[0]['request']->getUri())->toBe('https://staging.example.test/api/v1/balance');
 });
 
 it('throws MalformedResponseException when send response is missing the data envelope', function () {
@@ -183,9 +209,9 @@ it('throws MalformedResponseException when account payload is missing the id', f
 
 it('throws AuthenticationException on 401', function () {
     $mock = new MockHandler([
-        new \GuzzleHttp\Exception\ClientException(
+        new ClientException(
             'Unauthorized',
-            new \GuzzleHttp\Psr7\Request('POST', 'api/v1/sms'),
+            new Request('POST', 'api/v1/sms'),
             new Response(401, [], json_encode(['message' => 'Unauthenticated.'])),
         ),
     ]);
@@ -195,9 +221,9 @@ it('throws AuthenticationException on 401', function () {
 
 it('throws InsufficientCreditsException on 402 with balance details', function () {
     $mock = new MockHandler([
-        new \GuzzleHttp\Exception\ClientException(
+        new ClientException(
             'Payment Required',
-            new \GuzzleHttp\Psr7\Request('POST', 'api/v1/sms'),
+            new Request('POST', 'api/v1/sms'),
             new Response(402, [], json_encode([
                 'message' => 'Insufficient credits.',
                 'balance' => 2,
@@ -216,9 +242,9 @@ it('throws InsufficientCreditsException on 402 with balance details', function (
 
 it('throws ValidationException on 422 with field errors', function () {
     $mock = new MockHandler([
-        new \GuzzleHttp\Exception\ClientException(
+        new ClientException(
             'Unprocessable',
-            new \GuzzleHttp\Psr7\Request('POST', 'api/v1/sms'),
+            new Request('POST', 'api/v1/sms'),
             new Response(422, [], json_encode([
                 'message' => 'The to field is required.',
                 'errors' => ['to' => ['The to field is required.']],
@@ -233,10 +259,79 @@ it('throws ValidationException on 422 with field errors', function () {
     }
 });
 
+it('throws ApiException with the status code on a 5xx response', function () {
+    $mock = new MockHandler([
+        new Response(503, [], json_encode(['message' => 'Service unavailable.'])),
+    ]);
+
+    try {
+        makeClient($mock)->send('+61412345678', 'Hello');
+        $this->fail('Expected ApiException');
+    } catch (ApiException $e) {
+        expect($e->statusCode)->toBe(503)
+            ->and($e->getMessage())->toBe('Service unavailable.')
+            ->and($e->getPrevious())->toBeInstanceOf(ServerException::class);
+    }
+});
+
+it('throws ApiException on an unmapped 4xx response', function () {
+    $mock = new MockHandler([new Response(429, [], json_encode(['message' => 'Too many requests.']))]);
+
+    try {
+        makeClient($mock)->balance();
+        $this->fail('Expected ApiException');
+    } catch (ApiException $e) {
+        expect($e->statusCode)->toBe(429);
+    }
+});
+
+it('wraps connection failures in SmsPartnersException', function () {
+    $mock = new MockHandler([
+        new ConnectException(
+            'cURL error 28: Connection timed out',
+            new Request('POST', 'api/v1/sms'),
+        ),
+    ]);
+
+    try {
+        makeClient($mock)->send('+61412345678', 'Hello');
+        $this->fail('Expected SmsPartnersException');
+    } catch (SmsPartnersException $e) {
+        expect($e->getMessage())->toContain('Could not reach the SMS Partners API')
+            ->and($e->getPrevious())->toBeInstanceOf(ConnectException::class);
+    }
+});
+
+it('wraps any other Guzzle transfer exception in SmsPartnersException', function () {
+    // Guzzle 8 throws NetworkTimeoutException / ResponseTimeoutException etc. that
+    // are not ConnectExceptions. A bare RequestException is neither a
+    // BadResponseException nor a ConnectException on either major, so this
+    // proves the GuzzleException catch-all works regardless of Guzzle version.
+    $mock = new MockHandler([
+        new RequestException(
+            'Read timed out',
+            new Request('GET', 'api/v1/balance'),
+        ),
+    ]);
+
+    makeClient($mock)->balance();
+})->throws(SmsPartnersException::class, 'Could not reach the SMS Partners API: Read timed out');
+
+it('preserves the Guzzle exception as previous on typed API exceptions', function () {
+    $mock = new MockHandler([new Response(401, [], json_encode(['message' => 'Unauthenticated.']))]);
+
+    try {
+        makeClient($mock)->account();
+        $this->fail('Expected AuthenticationException');
+    } catch (AuthenticationException $e) {
+        expect($e->getPrevious())->toBeInstanceOf(ClientException::class);
+    }
+});
+
 it('verifies a valid webhook signature', function () {
     $secret = 'my-secret';
     $payload = '{"event":"message.delivered"}';
-    $signature = 'sha256=' . hash_hmac('sha256', $payload, $secret);
+    $signature = 'sha256='.hash_hmac('sha256', $payload, $secret);
 
     expect(Client::verifyWebhook($payload, $signature, $secret))->toBeTrue();
 });

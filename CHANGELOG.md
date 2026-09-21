@@ -3,6 +3,71 @@
 All notable changes to the SMS Partners PHP SDK are documented here. This
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.0] — 2026-09-21
+
+### Breaking
+
+- **Requires PHP 8.2+.** PHP 8.1 reached end of life in December 2025 and
+  is no longer supported.
+- **Requires Guzzle `^7.15.2 || ^8.0.1`.** The previous `^7.0` constraint
+  blocked installation alongside Guzzle 8 (released July 2026), which many
+  applications adopted to pick up the July 2026 Guzzle security fixes
+  (CVE-2026-69246 and related). The new floors are the first patched
+  releases on each major, so `composer update` will refuse to leave a
+  vulnerable Guzzle in place. Applications still on Guzzle 7 are
+  unaffected beyond a patch-level bump.
+
+### Fixed
+
+- **5xx responses, redirect loops and (on Guzzle 8) read timeouts escaped
+  as raw Guzzle exceptions**, contradicting the documented guarantee that
+  every SDK error extends `SmsPartnersException`. The client previously
+  caught only `ClientException` (4xx) and `ConnectException`. It now maps
+  every `BadResponseException` (4xx and 5xx) through the typed exception
+  hierarchy, and wraps any other `GuzzleException` in
+  `SmsPartnersException`. Guzzle 8 splits timeouts into
+  `ConnectTimeoutException` / `NetworkTimeoutException` /
+  `ResponseTimeoutException`, none of which the old catch handled.
+
+### Added
+
+- `Client::__construct()` accepts an optional third argument,
+  `?GuzzleHttp\ClientInterface $httpClient`, for supplying a
+  pre-configured Guzzle client (custom timeouts, proxy, CA bundle,
+  middleware, or a `MockHandler` in tests). This replaces the
+  reflection-based injection previously documented in the README.
+  Requests now use absolute URLs, so the supplied client needs no
+  `base_uri`.
+- Every typed exception now carries the underlying Guzzle exception as
+  `getPrevious()`.
+- `#[\SensitiveParameter]` on the API key constructor argument, so it is
+  redacted from stack traces on PHP 8.2+.
+- GitHub Actions CI running the suite on PHP 8.2–8.4 × Guzzle 7 and 8,
+  with lowest-dependency jobs and `composer audit` on every run plus a
+  weekly schedule.
+
+### Changed
+
+- `vendor/` and `composer.lock` are no longer committed. Distribution
+  archives previously bundled a stale vendored copy of Guzzle 7.10.0.
+  Dependabot was also unable to resolve the committed lock against the
+  declared PHP floor, so it never opened a dependency update.
+- Dev dependencies: Pest 3; the unused Mockery dependency is removed.
+
+### Upgrading from 1.x
+
+Most applications need only bump the constraint:
+
+```bash
+composer require sms-partners/php-sdk:^2.0
+```
+
+Review your error handling if you were catching `GuzzleHttp\Exception\*`
+directly around SDK calls — those exceptions are now wrapped, and are
+available via `getPrevious()`.
+
+[2.0.0]: https://github.com/SMSPartners/php-sdk/releases/tag/v2.0.0
+
 ## [1.0.3] — 2026-05-19
 
 ### Fixed

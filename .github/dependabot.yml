@@ -1,7 +1,16 @@
 version: 2
 updates:
+  # No composer.lock is committed (library convention), so Dependabot opens a PR
+  # only when a new release falls outside our declared constraints - e.g. a new
+  # Guzzle major. Security advisories inside the range are caught by the weekly
+  # `composer audit` job in tests.yml.
   - package-ecosystem: "composer"
     directory: "/"
     schedule:
       interval: "weekly"
     open-pull-requests-limit: 10
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"

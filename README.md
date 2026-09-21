@@ -4,8 +4,11 @@ Official PHP SDK for the [SMS Partners](https://smspartners.app) API.
 
 ## Requirements
 
-- PHP 8.1 or higher
+- PHP 8.2 or higher
+- Guzzle 7.15.2+ or 8.0.1+ (installed automatically)
 - Composer
+
+Upgrading from 1.x? See the [CHANGELOG](CHANGELOG.md) for the short list of changes.
 
 ## Installation
 
@@ -377,8 +380,10 @@ try {
 | `AuthenticationException` | API key is invalid or missing (HTTP 401) |
 | `InsufficientCreditsException` | Insufficient credits (HTTP 402). Exposes `balance` and `required`. |
 | `ValidationException` | Request failed validation (HTTP 422). Exposes `errors` keyed by field name. |
-| `ApiException` | Unexpected API error. Exposes `statusCode`. |
-| `SmsPartnersException` | Base class — also thrown for connection failures. |
+| `ApiException` | Any other 4xx or 5xx response (rate limits, server errors, maintenance). Exposes `statusCode`. |
+| `SmsPartnersException` | Base class — also thrown directly for transport failures (DNS, connection refused, connect/read timeouts, TLS errors). |
+
+Every exception carries the underlying Guzzle exception as `getPrevious()` if you need the raw request or response.
 
 ---
 
@@ -395,11 +400,27 @@ $client = new Client(
 );
 ```
 
+### Custom HTTP client
+
+By default the SDK creates its own Guzzle client with a 5 second connect timeout and a 15 second request timeout. To change those, or to configure a proxy, CA bundle or middleware, pass your own `GuzzleHttp\ClientInterface` as the third argument. Authentication headers and absolute URLs are set per request, so the client you supply needs no `base_uri` or default headers:
+
+```php
+use GuzzleHttp\Client as GuzzleClient;
+
+$client = new Client(
+    apiKey: 'your-api-key',
+    httpClient: new GuzzleClient([
+        'timeout' => 30,
+        'proxy' => 'http://proxy.internal:3128',
+    ]),
+);
+```
+
 ---
 
 ## Testing
 
-In your test suite, use Guzzle's `MockHandler` to intercept HTTP requests without hitting the real API:
+In your test suite, use Guzzle's `MockHandler` to intercept HTTP requests without hitting the real API, and pass the mocked client to the constructor:
 
 ```php
 use GuzzleHttp\Client as GuzzleClient;
@@ -425,13 +446,10 @@ $mock = new MockHandler([
     ])),
 ]);
 
-$guzzle = new GuzzleClient(['handler' => HandlerStack::create($mock)]);
-
-$client = new Client(apiKey: 'test-key');
-
-$reflection = new ReflectionProperty(Client::class, 'http');
-$reflection->setAccessible(true);
-$reflection->setValue($client, $guzzle);
+$client = new Client(
+    apiKey: 'test-key',
+    httpClient: new GuzzleClient(['handler' => HandlerStack::create($mock)]),
+);
 
 $response = $client->send('+61412345678', 'Hello!');
 assert($response->to === '+61412345678');

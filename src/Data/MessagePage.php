@@ -16,7 +16,7 @@ class MessagePage
     public readonly int $lastPage;
 
     /**
-     * @param array<string, mixed> $response
+     * @param  array<string, mixed>  $response
      */
     public function __construct(array $response)
     {
